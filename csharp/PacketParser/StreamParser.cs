@@ -9,117 +9,131 @@ namespace PacketParser
 {
     public enum ParseResult
     {
-        Sucess,
-        NotComplete,
-        Error,
-        BadPrefix
+        Sucess,         // 解析成功
+        NotComplete,    // 数据包不全
+        Error,          // 数据包错误
+        BadPrefix       // 错误的头部
     }
 
     public interface IPacket
     {
-        Type packetType { get; }
-        DateTime receiveTime { get; }
-        Slice<byte> buffer { get; }
+        Type PacketType { get; }
+        DateTime ReceiveTime { get; }
+        Slice Buffer { get; }
     }
 
     public struct DataFrame
     {
         public DateTime time;
-        public Slice<byte> buffer;
+        public Slice buffer;
     }
 
-    delegate ParseResult _tryParse(Slice<byte> buffer);
-    delegate dynamic _getPacketFromBytes(Slice<byte> buffer);
+    delegate ParseResult TryParse(Slice buffer);
+    delegate dynamic GetPacketFromBytes(Slice buffer);
 
-    struct _ParserFunc
+    struct ParserFunc
     {
-        public _tryParse tryParse;
-        public _getPacketFromBytes getPacketFromBytes;
+        public TryParse tryParse;
+        public GetPacketFromBytes getPacketFromBytes;
     }
 
     public class StreamParser
     {
         private Stream io_stream;
-        private List<_ParserFunc> parsers;
+        private List<ParserFunc> parsers;
         private List<IPacket> packets;
         private List<DataFrame> dataframes;
         private Buffer buffer;
 
-        public delegate void newFrameHandler();
+        public delegate void newFrameHandler(Slice);
         public newFrameHandler OnNewFrame;
-        public delegate void newPacketHandler();
+        public delegate void newPacketHandler(Slice);
         public newPacketHandler OnNewPacket;
 
-        public StreamParser(Stream stream)
+        public StreamParser(Stream stream, bool background_thread=true, int default_size=65536)
         {
             io_stream = stream;
-            buffer = new Buffer();
+            buffer = new Buffer(default_size);
             dataframes = new List<DataFrame>(1024);
             packets = new List<IPacket>(1024);
-            parsers = new List<_ParserFunc>();
-            OnNewFrame += () => { };
-            OnNewPacket += () => { };
+            parsers = new List<ParserFunc>();
+            OnNewFrame += (slice) => { };
+            OnNewPacket += (slice) => { };
         }
 
-        public void addParser(Type packet_class)
+        public void AddParser(Type packet_class)
         {
+            // 检查是否实现了 IPacket 接口
             if (!packet_class.GetInterfaces().Contains<Type>(typeof(IPacket)))
                 throw new ArgumentException();
-            _ParserFunc _par = new _ParserFunc();
-            MethodInfo mi = packet_class.GetMethod("tryParse", BindingFlags.Public | BindingFlags.Static);
+
+            // 一个新的解析器
+            ParserFunc _par = new ParserFunc();
+            // 生成 TryParse 静态方法的委托
+            MethodInfo mi = packet_class.GetMethod("TryParse", BindingFlags.Public | BindingFlags.Static);
             if (mi.ReturnType != typeof(ParseResult))
                 throw new ArgumentException();
-            _par.tryParse = Delegate.CreateDelegate(typeof(_tryParse), mi) as _tryParse;
-            mi = packet_class.GetMethod("getPacketFromBytes", BindingFlags.Public | BindingFlags.Static);
+            _par.tryParse = Delegate.CreateDelegate(typeof(TryParse), mi) as TryParse;
+
+            // 生成 GetPacketFromBytes 静态方法的委托
+            mi = packet_class.GetMethod("GetPacketFromBytes", BindingFlags.Public | BindingFlags.Static);
             if (mi.ReturnType.IsInstanceOfType(typeof(IPacket)))
                 throw new ArgumentException();
-            _par.getPacketFromBytes = Delegate.CreateDelegate(typeof(_getPacketFromBytes), mi) as _getPacketFromBytes;
+            _par.getPacketFromBytes = Delegate.CreateDelegate(typeof(GetPacketFromBytes), mi) as GetPacketFromBytes;
 
+            // 添加到解析器列表
             parsers.Add(_par);
+        }
+
+        public void ReadAndParse()
+        {
+            byte[] bytes = new byte[4096] ;
+            int readReadLength = io_stream.Read(bytes, 0, bytes.Length);
+            buffer.Append(bytes.Take(readReadLength));
+
         }
     }
 
     public class Buffer
     {
-        private int _buffer_size = 1024 * 1024;
-        private int _modulus = 1;
-        private byte[] _buffer;
-        private int _read_index, _write_index;
-        private List<Slice<byte>> _slices;
-        private Slice<byte> _parsed, _unparsed, _received;
+        private int modulus = 1;
+        private List<byte> buffer;
+        private int read_index, write_index;
+        private List<Slice> slices;
+        private Slice parsed, unparsed, received;
 
-        public Buffer()
+        public Buffer(int default_size)
         {
-            _buffer = new byte[_buffer_size * _modulus];
-            _read_index = 0;
-            _write_index = 0;
-            _slices = new List<Slice<byte>>(1024);
-            _parsed = new Slice<byte>(ref _buffer, 0, 0);
-            _unparsed = new Slice<byte>(ref _buffer, 0, 0);
-            _received = new Slice<byte>(ref _buffer, 0, 0);
+            buffer = new List<byte>(default_size);
+            read_index = 0;
+            write_index = 0;
+            slices = new List<Slice>(1024);
+            parsed = new Slice(buffer, 0, 0);
+            unparsed = new Slice(buffer, 0, 0);
+            received = new Slice(buffer, 0, 0);
         }
 
         public int Count
         {
             get
             {
-                return _unparsed.Count;
+                return unparsed.Count;
             }
         }
 
-        public int receivedCount
+        public int ReceivedCount
         {
             get
             {
-                return _received.Count;
+                return received.Count;
             }
         }
 
-        public Slice<byte> InBytes
+        public Slice InBytes
         {
             get
             {
-                return _unparsed;
+                return unparsed;
             }
         }
 
@@ -127,60 +141,42 @@ namespace PacketParser
         {
             lock (this)
             {
-                Console.WriteLine("Skipped: " + count.ToString());
-                if (count > _unparsed.Count)
+                if (count > unparsed.Count)
                     throw new ArgumentOutOfRangeException();
 
-                _read_index += count;
-                _parsed = new Slice<byte>(ref _buffer, 0, _read_index);
-                _unparsed = new Slice<byte>(ref _buffer, _read_index, _write_index - _read_index);
+                read_index += count;
+                parsed = new Slice(buffer, 0, read_index);
+                unparsed = new Slice(buffer, read_index, write_index - read_index);
             }
         }
 
-        public Slice<byte> createSlice(int offset, int count)
+        public Slice CreateSlice(int offset, int count)
         {
-            Slice<byte> temp;
-            temp = new Slice<byte>(ref _buffer, offset, count);
-            _slices.Add(temp);
+            Slice temp;
+            temp = new Slice(buffer, offset, count);
+            slices.Add(temp);
             return temp;
         }
 
-        public void disposeSlice(Slice<byte> slice)
-        {
-            if (!_slices.Contains(slice))
-                throw new ArgumentOutOfRangeException();
-            _slices.Remove(slice);
-        }
-
-        public Slice<byte> append(byte[] bytes)
+        public Slice Append(IEnumerable<byte> bytes)
         {
             lock (this)
             {
-                Slice<byte> just_added;
+                Slice just_added;
 
-                if (bytes.Length + _write_index > _buffer.Length)
-                {
-                    // 空间不够的话，直接翻倍
-                    _modulus *= 2;
-                    byte[] temp = new byte[_buffer_size * _modulus];
-                    _buffer.CopyTo(temp, 0);
-                    _buffer = temp;
-                }
-
-                bytes.CopyTo(_buffer, _write_index);
-                just_added = new Slice<byte>(ref _buffer, _write_index, bytes.Length);
-                _write_index += bytes.Length;
-                _unparsed = new Slice<byte>(ref _buffer, _read_index, _write_index - _read_index);
-                _received = new Slice<byte>(ref _buffer, 0, _write_index);
+                buffer.Concat(bytes);
+                just_added = new Slice(buffer, write_index, bytes.Count());
+                unparsed = new Slice(buffer, read_index, write_index - read_index);
+                received = new Slice(buffer, 0, write_index);
                 return just_added;
             }
         }
 
-        public Slice<byte> All
+        public Slice All
         {
             get
             {
-                return _received;
+                return received;
             }
         }
     }

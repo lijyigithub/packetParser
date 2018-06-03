@@ -5,56 +5,54 @@ using System.Text;
 
 namespace PacketParser
 {
-    public static class Extension<T>
+    public static class ExtensionHolder
     {
-        public static Slice<T> createSlice(this T[] t, int a, int b)
+        public static Slice CreateSlice(this List<byte> t, int a, int b)
         {
-            return new Slice<T>(ref t, a, b - a);
+            return new Slice(t, a, b - a);
         }
     }
 
-    public class Slice<T>
+    public class Slice: List<byte>
     {
-        private T[] _as;
-        private int _offset;
-        private int _count;
+        private List<byte> targetlist;
+        private int a;
+        private int b;
 
-        public Slice(ref T[] array, int Offset, int Count)
+        public Slice(List<byte> array, int a, int b)
         {
-            if (array == null)
-                throw new NullReferenceException();
-            this._as = array;
-            if (_offset < 0)
+            targetlist = array ?? throw new NullReferenceException();
+            if (a < 0)
                 throw new IndexOutOfRangeException();
-            if (_offset + Count >= array.Length)
+            if (b >= array.Count)
                 throw new IndexOutOfRangeException();
-            this._offset = Offset;
-            this._count = Count;
+            this.a = a;
+            this.b = b;
         }
 
-        public T this[int index]
+        public new byte this[int index]
         {
             get
             {
-                return _as[_offset + index];
+                return targetlist[a + index];
             }
             set
             {
-                _as[_offset + index] = value;
+                targetlist[a + index] = value;
             }
         }
 
-        public void reloc(int a, int b)
+        public void Reloc(int a, int b)
         {
-            this._offset = a;
-            this._count = b - a;
+            this.a = a;
+            this.b = b;
         }
 
-        public int Count
+        public new int Count
         {
             get
             {
-                return this._as.Length;
+                return b-a;
             }
         }
     }
