@@ -43,14 +43,16 @@ class Slice():
 
 CreateSlice = lambda arr, a, b:Slice(arr, a, b)
 
-class IPacket(metaclass=ABCMeta):
-    @abstractclassmethod
+class IPacket():
+    
+
     @staticmethod
+    @abstractclassmethod
     def tryParse(slice):
         pass
 
+    @classmethod
     @abstractclassmethod
-    @staticmethod
     def getPacketFromBytes(slice):
         pass
 
