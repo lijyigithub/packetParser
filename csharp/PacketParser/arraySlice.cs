@@ -21,7 +21,9 @@ namespace PacketParser
 
         public Slice(List<byte> array, int a, int b)
         {
-            targetlist = array ?? throw new NullReferenceException();
+            if(array == null)
+                throw new NullReferenceException();
+            targetlist = array;
             if (a < 0)
                 throw new IndexOutOfRangeException();
             if (b >= array.Count)

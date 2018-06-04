@@ -4,6 +4,7 @@ using System.Linq;
 using System.Text;
 using System.IO;
 using System.Reflection;
+using System.Threading;
 
 namespace PacketParser
 {
@@ -44,10 +45,11 @@ namespace PacketParser
         private List<IPacket> packets;
         private List<DataFrame> dataframes;
         private Buffer buffer;
+        private Thread bg_thread;
 
-        public delegate void newFrameHandler(Slice);
+        public delegate void newFrameHandler(DataFrame df);
         public newFrameHandler OnNewFrame;
-        public delegate void newPacketHandler(Slice);
+        public delegate void newPacketHandler(IPacket pkt);
         public newPacketHandler OnNewPacket;
 
         public StreamParser(Stream stream, bool background_thread=true, int default_size=65536)
@@ -59,44 +61,115 @@ namespace PacketParser
             parsers = new List<ParserFunc>();
             OnNewFrame += (slice) => { };
             OnNewPacket += (slice) => { };
+
+            if (background_thread)
+            {
+                bg_thread = new Thread(this.RunForever);
+                bg_thread.IsBackground = true;
+                bg_thread.Start();
+            }
+        }
+
+        public void Stop()
+        {
+            lock (this)
+            {
+                if (bg_thread != null)
+                {
+                    bg_thread.Abort();
+                }
+            }
         }
 
         public void AddParser(Type packet_class)
         {
-            // 检查是否实现了 IPacket 接口
-            if (!packet_class.GetInterfaces().Contains<Type>(typeof(IPacket)))
-                throw new ArgumentException();
+            lock (this)
+            {
+                // 检查是否实现了 IPacket 接口
+                if (!packet_class.GetInterfaces().Contains<Type>(typeof(IPacket)))
+                    throw new ArgumentException();
 
-            // 一个新的解析器
-            ParserFunc _par = new ParserFunc();
-            // 生成 TryParse 静态方法的委托
-            MethodInfo mi = packet_class.GetMethod("TryParse", BindingFlags.Public | BindingFlags.Static);
-            if (mi.ReturnType != typeof(ParseResult))
-                throw new ArgumentException();
-            _par.tryParse = Delegate.CreateDelegate(typeof(TryParse), mi) as TryParse;
+                // 一个新的解析器
+                ParserFunc _par = new ParserFunc();
+                // 生成 TryParse 静态方法的委托
+                MethodInfo mi = packet_class.GetMethod("TryParse", BindingFlags.Public | BindingFlags.Static);
+                if (mi.ReturnType != typeof(ParseResult))
+                    throw new ArgumentException();
+                _par.tryParse = Delegate.CreateDelegate(typeof(TryParse), mi) as TryParse;
 
-            // 生成 GetPacketFromBytes 静态方法的委托
-            mi = packet_class.GetMethod("GetPacketFromBytes", BindingFlags.Public | BindingFlags.Static);
-            if (mi.ReturnType.IsInstanceOfType(typeof(IPacket)))
-                throw new ArgumentException();
-            _par.getPacketFromBytes = Delegate.CreateDelegate(typeof(GetPacketFromBytes), mi) as GetPacketFromBytes;
+                // 生成 GetPacketFromBytes 静态方法的委托
+                mi = packet_class.GetMethod("GetPacketFromBytes", BindingFlags.Public | BindingFlags.Static);
+                if (mi.ReturnType.IsInstanceOfType(typeof(IPacket)))
+                    throw new ArgumentException();
+                _par.getPacketFromBytes = Delegate.CreateDelegate(typeof(GetPacketFromBytes), mi) as GetPacketFromBytes;
 
-            // 添加到解析器列表
-            parsers.Add(_par);
+                // 添加到解析器列表
+                parsers.Add(_par);
+            }
         }
 
         public void ReadAndParse()
         {
-            byte[] bytes = new byte[4096] ;
-            int readReadLength = io_stream.Read(bytes, 0, bytes.Length);
-            buffer.Append(bytes.Take(readReadLength));
+            lock (this)
+            {
+                byte[] bytes = new byte[4096];
 
+                int readReadLength;
+                try
+                {
+                    readReadLength = io_stream.Read(bytes, 0, bytes.Length);
+                }
+                catch (TimeoutException e)
+                {
+                    return;
+                }
+                DataFrame df = new DataFrame();
+                df.time = DateTime.UtcNow;
+                df.buffer = buffer.Append(bytes.Take(readReadLength));
+                OnNewFrame(df);
+
+                do
+                {
+                    // 获取解析结果
+                    var result_list = parsers.Select(it => it.tryParse(buffer.InBytes)).ToList();
+
+                    // 如果有解析成功的，取第一个
+                    if (result_list.Any(it => it == ParseResult.Sucess))
+                    {
+                        var index = result_list.IndexOf(ParseResult.Sucess);
+                        var _par = parsers[index];
+                        IPacket _packet = _par.getPacketFromBytes(buffer.InBytes);
+                        if (_packet != null)
+                        {
+                            packets.Add(_packet);
+                            OnNewPacket(_packet);
+                            buffer.Skip(_packet.Buffer.Count);
+                            continue;
+                        }
+                    }
+                    else if (result_list.All(it => it != ParseResult.NotComplete))
+                    {
+                        buffer.Skip(1);
+                        continue;
+                    }
+
+                    if (result_list.All(it => (it != ParseResult.Sucess) && (it != ParseResult.NotComplete)))
+                    {
+                        break;
+                    }
+                } while (buffer.InBytes.Count > 0);
+            }
+        }
+
+        public void RunForever()
+        {
+            while (true)
+                this.ReadAndParse();
         }
     }
 
     public class Buffer
     {
-        private int modulus = 1;
         private List<byte> buffer;
         private int read_index, write_index;
         private List<Slice> slices;
