@@ -110,19 +110,19 @@ namespace PacketParser
 
         public void ReadAndParse()
         {
+            byte[] bytes = new byte[4096];
+
+            int readReadLength;
+            try
+            {
+                readReadLength = io_stream.Read(bytes, 0, bytes.Length);
+            }
+            catch (TimeoutException e)
+            {
+                return;
+            }
             lock (this)
             {
-                byte[] bytes = new byte[4096];
-
-                int readReadLength;
-                try
-                {
-                    readReadLength = io_stream.Read(bytes, 0, bytes.Length);
-                }
-                catch (TimeoutException e)
-                {
-                    return;
-                }
                 DataFrame df = new DataFrame();
                 df.time = DateTime.UtcNow;
                 df.buffer = buffer.Append(bytes.Take(readReadLength));

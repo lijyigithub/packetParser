@@ -31,55 +31,86 @@ class Slice():
         return not self == other
 
     def __getitem__(self, key):
-        assert isinstance(key, int)
-        return self.arr[self.a + key]
+        if isinstance(key, int):
+            return self.arr[self.a + key]
+        elif isinstance(key, slice):
+            if key.step is not None and key.step != 1:
+                raise ValueError('Step should be 1')
+            start = 0
+            end = 0
+            if key.start is None:
+                start = self.a
+            else:
+                if key.start >=0:
+                    start = self.a + key.start
+                else:
+                    start = self.b + key.start
+            
+            if key.stop is None:
+                end = self.b
+            else:
+                if key.stop >= 0:
+                    end = self.a + key.stop
+                else:
+                    end = self.b + key.stop
+            
+            return Slice(self.arr, start, end)
 
     def __iter__(self):
-        for i in range(self.b - self.a):
+        for i in range(self.a, self.b):
             yield self.arr[i]
 
+    def __len__(self):
+        return self.b - self.a
+
+    def Reloc(self, a, b):
+        self.a = a
+        self.b = b
+
     def CreateSlice(self, a, b):
-        return Slice(self.arr, self.a + a, self.b + b)
+        return Slice(self.arr, self.a + a, self.a + b)
 
-CreateSlice = lambda arr, a, b:Slice(arr, a, b)
-
-class IPacket():
-    
-
-    @staticmethod
-    @abstractclassmethod
-    def tryParse(slice):
-        pass
-
-    @classmethod
-    @abstractclassmethod
-    def getPacketFromBytes(slice):
-        pass
 
 class StreamParser():
     def __init__(self, read_stream, background_thread=True, default_size=65536):
-        self.read_stream = read_stream
-        self.buffer = Buffer()
+        r_stream = None
+        import random
+        import string
+        type_name = 'ReadObject_' + ''.join([random.choice(string.ascii_letters) for _ in range(32)])
+        if hasattr(read_stream, 'recv'):
+            # socket
+            r_stream = type(type_name, (object,), dict(read=read_stream.recv))
+        elif hasattr(read_stream, 'read'):
+            # file or serial
+            r_stream = type(type_name, (object,), dict(read=read_stream.read))
+        else:
+            raise ValueError('read_stream shoud be instance of file, socket, serial or object has method like .read(size).')
+        self.read_stream = r_stream
+        self.buffer = Buffer(default_size)
         self.dataframes = list()
         self.packets = list()
         self.parsers = list()
-        # TODO: 添加回调函数初始化
+        self.OnNewDataFrame = list()
+        self.OnNewPacket = list()
         if background_thread:
-            pass
+            import threading
+            self.thread = threading.Thread(target=self.RunForever)
+            self.thread.setDaemon(True)
+            self.thread.run()
     
     def AddParser(self, parser):
         pass
 
+    def ReadAndParse(self):
+        buf = None
+        try:
+            buf = self.read_stream.read(4096)
+        except TimeoutError:
+            pass
+
+        self.buffer.Append(buf)
+
+
 
 class Buffer():
     pass
-
-def main():
-    l = list(range(100))
-    s = CreateSlice(l, 0, 10)
-    for b in s:
-        print(b)
-
-
-if __name__ == '__main__':
-    main()
