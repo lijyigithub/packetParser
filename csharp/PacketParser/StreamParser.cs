@@ -152,11 +152,15 @@ namespace PacketParser
                         buffer.Skip(1);
                         continue;
                     }
-
-                    if (result_list.All(it => (it != ParseResult.Sucess) && (it != ParseResult.NotComplete)))
+                    else
                     {
                         break;
                     }
+
+                    // if (result_list.All(it => (it != ParseResult.Sucess) && (it != ParseResult.NotComplete)))
+                    // {
+                    //     break;
+                    // }
                 } while (buffer.InBytes.Count > 0);
             }
         }

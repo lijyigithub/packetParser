@@ -1,4 +1,4 @@
-from abc import ABCMeta, abstractclassmethod
+import time
 
 class Slice():
     def __init__(self, arr, a, b):
@@ -6,7 +6,7 @@ class Slice():
             raise ValueError('arr shoue be instance of bytes')
         if a < 0:
             raise ValueError('a should larger than 0')
-        if b >= len(arr):
+        if b > len(arr):
             raise ValueError('b should less than length of array')
         if isinstance(arr, list):
             self.arr = arr
@@ -70,16 +70,26 @@ class Slice():
     def CreateSlice(self, a, b):
         return Slice(self.arr, self.a + a, self.a + b)
 
+class ParseResult:
+    Sucess = 0
+    NotComplete = 1
+    BadSuffix = 2
+    Error = 3
 
 class StreamParser():
-    def __init__(self, read_stream, background_thread=True, default_size=65536):
+    def __init__(self, read_stream, background_thread=True, default_size=65536, packet_queue=None):
         r_stream = None
+        self.queue = None
+        if packet_queue is not None:
+            import queue
+            assert isinstance(packet_queue, queue.Queue)
+            self.queue = packet_queue
         import random
         import string
         type_name = 'ReadObject_' + ''.join([random.choice(string.ascii_letters) for _ in range(32)])
         if hasattr(read_stream, 'recv'):
             # socket
-            r_stream = type(type_name, (object,), dict(read=read_stream.recv))
+            r_stream = type(type_name, (object,), dict(read=lambda x:read_stream.recv))
         elif hasattr(read_stream, 'read'):
             # file or serial
             r_stream = type(type_name, (object,), dict(read=read_stream.read))
@@ -99,7 +109,11 @@ class StreamParser():
             self.thread.run()
     
     def AddParser(self, parser):
-        pass
+        assert hasattr(parser, 'tryParse')
+        assert hasattr(parser.tryParse, '__call__')
+        assert hasattr(parser, 'getPacketFromBytes')
+        assert hasattr(parser.getPacketFromBytes, '__call__')
+        self.parsers.append(parser)
 
     def ReadAndParse(self):
         buf = None
@@ -108,9 +122,68 @@ class StreamParser():
         except TimeoutError:
             pass
 
-        self.buffer.Append(buf)
+        df = self.buffer.Append(buf)
+        self.dataframes.append(df)
+        for cb in self.OnNewDataFrame:
+            cb(df)
 
+        while len(self.buffer.InBytes) > 0:
+            parse_result = [par.tryParse(self.buffer.InBytes) for par in self.parsers]
+            if ParseResult.Sucess in parse_result:
+                index = parse_result.index(ParseResult.Sucess)
+                packet = self.parsers[index].getPacketFromBytes(self.buffer.InBytes)
+                self.packets.append(packet)
+                if hasattr(self, 'queue'):
+                    self.queue.put(packet)
+                for cb in self.OnNewPacket:
+                    cb(packet)
+                self.buffer.Skip(len(packet.buffer))
+            elif all([r != ParseResult.NotComplete for r in parse_result]):
+                self.buffer.Skip(1)
+            else:
+                break
+
+    def RunForever(self):
+        while True:
+            self.ReadAndParse()
 
 
 class Buffer():
-    pass
+    def __init__(self, size):
+        # 预分配空间
+        self.buffer = [None] * size
+        self.out_index = 0
+        self.length = 0
+        self.inbytes = Slice(self.buffer, 0, 0)
+
+    def __len__(self):
+        return self.length
+
+    @property
+    def InBytes(self):
+        return self.inbytes
+
+    def Append(self, buf):
+        if isinstance(buf, bytes):
+            buf = list(buf)
+        assert isinstance(buf, list)
+        start = self.out_index
+        stop = self.out_index + len(buf)
+        if stop > len(self.buffer):
+            stop = None
+        self.buffer[start:stop] = buf
+        self.length = start + len(buf)
+        self.inbytes.Reloc(start, self.length)
+        return Slice(self.buffer, start, self.length)
+
+    def Skip(self, n):
+        assert isinstance(n, int)
+        assert self.out_index + n <= self.length
+        self.out_index += n
+        self.inbytes.Reloc(self.out_index, self.length)
+
+    def CreateSlice(self, a, b):
+        assert a >= 0
+        assert b > a
+        assert b <= self.length
+        return Slice(self.buffer, a, b)
