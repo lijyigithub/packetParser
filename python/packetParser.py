@@ -89,7 +89,7 @@ class StreamParser():
         type_name = 'ReadObject_' + ''.join([random.choice(string.ascii_letters) for _ in range(32)])
         if hasattr(read_stream, 'recv'):
             # socket
-            r_stream = type(type_name, (object,), dict(read=lambda x:read_stream.recv))
+            r_stream = type(type_name, (object,), dict(read=read_stream.recv))
         elif hasattr(read_stream, 'read'):
             # file or serial
             r_stream = type(type_name, (object,), dict(read=read_stream.read))
@@ -102,10 +102,13 @@ class StreamParser():
         self.parsers = list()
         self.OnNewDataFrame = list()
         self.OnNewPacket = list()
+        self.mutex = None
         if background_thread:
             import threading
             self.thread = threading.Thread(target=self.RunForever)
             self.thread.setDaemon(True)
+            self.notstop = True
+            self.mutex = threading.Lock()
             self.thread.run()
     
     def AddParser(self, parser):
@@ -113,7 +116,11 @@ class StreamParser():
         assert hasattr(parser.tryParse, '__call__')
         assert hasattr(parser, 'getPacketFromBytes')
         assert hasattr(parser.getPacketFromBytes, '__call__')
-        self.parsers.append(parser)
+        self.mutex and self.mutex.acquire()
+        try:
+            self.parsers.append(parser)
+        finally:
+            self.mutex and self.mutex.release()
 
     def ReadAndParse(self):
         buf = None
@@ -122,31 +129,39 @@ class StreamParser():
         except TimeoutError:
             pass
 
-        df = self.buffer.Append(buf)
-        self.dataframes.append(df)
-        for cb in self.OnNewDataFrame:
-            cb(df)
+        self.mutex and self.mutex.acquire()
+        try:
+            df = self.buffer.Append(buf)
+            self.dataframes.append(df)
+            for cb in self.OnNewDataFrame:
+                cb(df)
 
-        while len(self.buffer.InBytes) > 0:
-            parse_result = [par.tryParse(self.buffer.InBytes) for par in self.parsers]
-            if ParseResult.Sucess in parse_result:
-                index = parse_result.index(ParseResult.Sucess)
-                packet = self.parsers[index].getPacketFromBytes(self.buffer.InBytes)
-                self.packets.append(packet)
-                if hasattr(self, 'queue'):
-                    self.queue.put(packet)
-                for cb in self.OnNewPacket:
-                    cb(packet)
-                self.buffer.Skip(len(packet.buffer))
-            elif all([r != ParseResult.NotComplete for r in parse_result]):
-                self.buffer.Skip(1)
-            else:
-                break
+            while len(self.buffer.InBytes) > 0:
+                parse_result = [par.tryParse(self.buffer.InBytes) for par in self.parsers]
+                if ParseResult.Sucess in parse_result:
+                    index = parse_result.index(ParseResult.Sucess)
+                    packet = self.parsers[index].getPacketFromBytes(self.buffer.InBytes)
+                    self.packets.append(packet)
+                    if self.queue is not None:
+                        self.queue.put(packet)
+                    for cb in self.OnNewPacket:
+                        cb(packet)
+                    self.buffer.Skip(len(packet.buffer))
+                elif all([r != ParseResult.NotComplete for r in parse_result]):
+                    self.buffer.Skip(1)
+                else:
+                    break
+        finally:
+            self.mutex and self.mutex.release()
 
     def RunForever(self):
-        while True:
+        while self.notstop:
             self.ReadAndParse()
 
+    def Stop(self):
+        self.mutex and self.mutex.acquire()
+        self.notstop = False
+        self.mutex.release()
 
 class Buffer():
     def __init__(self, size):

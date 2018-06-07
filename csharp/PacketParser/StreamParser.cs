@@ -176,7 +176,6 @@ namespace PacketParser
     {
         private List<byte> buffer;
         private int read_index, write_index;
-        private List<Slice> slices;
         private Slice parsed, unparsed, received;
 
         public Buffer(int default_size)
@@ -184,26 +183,9 @@ namespace PacketParser
             buffer = new List<byte>(default_size);
             read_index = 0;
             write_index = 0;
-            slices = new List<Slice>(1024);
             parsed = new Slice(buffer, 0, 0);
             unparsed = new Slice(buffer, 0, 0);
             received = new Slice(buffer, 0, 0);
-        }
-
-        public int Count
-        {
-            get
-            {
-                return unparsed.Count;
-            }
-        }
-
-        public int ReceivedCount
-        {
-            get
-            {
-                return received.Count;
-            }
         }
 
         public Slice InBytes
@@ -231,7 +213,6 @@ namespace PacketParser
         {
             Slice temp;
             temp = new Slice(buffer, offset, count);
-            slices.Add(temp);
             return temp;
         }
 
@@ -246,14 +227,6 @@ namespace PacketParser
                 unparsed = new Slice(buffer, read_index, write_index - read_index);
                 received = new Slice(buffer, 0, write_index);
                 return just_added;
-            }
-        }
-
-        public Slice All
-        {
-            get
-            {
-                return received;
             }
         }
     }
